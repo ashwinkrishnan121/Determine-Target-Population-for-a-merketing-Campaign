@@ -1,0 +1,569 @@
+---
+title: "Comcast- Data Challenge"
+author:
+- name: Gopalakrishnan Kalarikovilagam Subramanian
+date: "July 10, 2019"
+output: 
+  prettydoc::html_pretty:
+    theme: architect
+---
+
+## INTRODUCTION
+
+The dataset contains records of customer that were serviced by the CoE in the 
+last 9 months, and the analyst created a binary indicator (1 = YES, 0 = NO) of 
+which customers were cross-sold as the target variable.
+
+The goal of this project is to build a model for detecting the dependencies of 
+the output variable on a subset of the given input parameters. The data is a 
+mixture of categorical and continuous variables.The data also contains many 
+missing values. The data needs to be cleaned first. The dimentionality of 
+the data set needs to be reduced to improve the ease of modelling, reduce
+the time of modelling and improve our understanding of the model.
+ 
+The data set presents the transaction over 9 months and it has 300,000 observations.
+The output variable is ???target??? which is the response variable and can take value
+of 1 in case of success of cross-selling and 0 otherwise.  The data set is 
+highly unbalanced and therefore over-sampling technique has been used for improving
+the balance of the data set.
+
+The output variable is binary and hence is a classification problem. Therefore the 
+following methods can be used:
+1.	Logistic regression
+2.	Decision trees
+3.	Random Forest
+4.	Gradient Boosting Machine
+5.	Support Vector Machine (SVM)
+
+## Packages Required
+
+The following packages are being used for our analysis:
+
+```{r message = FALSE}
+#pretty doc to have a nice html output for the rmd
+library(prettydoc)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(ranger)
+library(pROC)
+library(pdp)
+library(ggplot2)
+library(gbm)
+library(xgboost)
+library(adabag)
+library(ROCR)
+library(lattice)
+library(randomForest)
+```
+
+## Data Collection
+
+The data is imported into R work space. The delimitation used is '|'. The data
+consists of 300000 observations and 128 variables. The data is a mixture of 
+categorical and continuous variables. The output variable is 'target' and is a 
+binary variable which takes values '1' and '0'. 
+
+```{r message = FALSE, results='hide', eval = TRUE}
+#import data
+
+Customer_data <- read.csv(file="DS_Tech_Review_Dataset (1).txt", sep="|")
+summary(Customer_data)
+```
+
+
+## Data Preparation
+
+The data set contains lots of NA value. To do feature engineering we need to have
+a clean data set without NA values. As a first step the variables having more than
+50% NA values are removed. This resulted in the removal of 36 variables. The
+new data set contains 300000 observations and 92 variables. The rows are then 
+scanned for NA values. Any row which contains a NA value is removed. This resulted
+in a new data set with 138501 rows. 
+
+```{r echo=FALSE}
+## Remove columns with more than 50% NA
+Customer_data_mod <-  Customer_data[, -which(colMeans(is.na(Customer_data)) > 0.5)]
+summary(Customer_data_mod)
+
+##Remove rows with NA values
+Customer_data_mod2 <- Customer_data_mod[-which(rowMeans(is.na(Customer_data_mod)) > 0), ]
+
+str(Customer_data_mod2)
+
+```
+It was observed that two  columns - 'MAJOR_CREDIT_CARD_LIF' and 'product'
+were character categorical variables and they were converted to ordinal
+categorical variables as shown below:
+```{r}
+
+#Variable correction
+
+Customer_data_mod2$MAJOR_CREDIT_CARD_LIF <- ifelse(Customer_data_mod2$MAJOR_CREDIT_CARD_LIF == 'U', 1,0)
+Customer_data_mod2$product <- ifelse(Customer_data_mod2$product == 'VIDEO/DATA/VOICE', 0,
+                                         ifelse(Customer_data_mod2$product == 'VIDEO/DATA ', 1,
+                                                ifelse(Customer_data_mod2$product == 'VIDEO/DATA/VOICE/HOME',2,
+                                                       ifelse(Customer_data_mod2$product == 'VIDEO/DATA/HOME', 3,
+                                                              ifelse(Customer_data_mod2$product == 'VIDEO/VOICE',4,
+                                                                     ifelse(Customer_data_mod2$product == 'VIDEO ONLY',5,6
+                                                                            ))))))
+
+```
+### Feature Engineering
+Feature Engineering is performed on the cleaned data set. The variables with zero
+variance are removed from the data set. This resulted in the removal of three
+variables. The data set is then split into two difference data frames - one with
+all the categorical variables and the other with all the continuous variables.
+
+The continuous variables data set is then checked for near zero variance predictors.
+The split is done because the categorical variables are generally near zero
+predictors and would have been removed had this been done on the whole data frame.
+This necessitated the split into continuous and categorical data frames. The near
+zero variance test resulted in the removal of 23 variables.
+
+```{r echo=FALSE}
+# Remove features with zero variance
+Customer_data_mod2 <- Customer_data_mod2[ - as.numeric(which(apply(Customer_data_mod2, 2, var) == 0))]
+
+#Seperate Categorical and Continuous variables
+
+discreteL <- function(x) length(unique(x)) < 10
+
+Customer_data_cont <- Customer_data_mod2[ , !sapply(Customer_data_mod2, discreteL)] 
+Customer_data_categorical <- Customer_data_mod2[ , sapply(Customer_data_mod2, discreteL)] 
+
+
+# Identify near zero variance predictors on the continuous data set
+remove_cols <- nearZeroVar(Customer_data_cont, names = TRUE, 
+                           freqCut = 2, uniqueCut = 20)
+
+# Get all column names from Customer_data_cont: all_cols
+all_cols <- names(Customer_data_cont)
+
+# Remove from data: Customer_data_cont2
+Customer_data_cont2 <- Customer_data_cont[ , setdiff(all_cols, remove_cols)]
+```
+
+Pricipal component analysis is then performed on the reduced continuous dataframe.
+This is important because the regular principal component analysis can be carried
+on a continuous variable and this necessitated the orginal split into continuous
+and categorical data frames. The Principa component analysis resulted in the 
+reduction of the 28 variables to 2 main principal components. These principal
+components explained 99% of the variance of the 28 variables. The data frame 
+containg these two principal components are column binded with the categorical
+data frame created before and this is the reduced data frame which is going to be
+used for the data analysis.
+
+The variables having maximum loading for Principal component 1 (PC1) are:
+video_days_on_books, AGE18UP , data_total_gb, bllng_amt, data_penetration_pct,
+mrm_rec_data_amt
+
+The variables having maximum loading for Principal component 1 (PC2) are:
+AGE18UP, video_days_on_books, data_penetration_pct, data_total_gb,bllng_amt,
+video_penetration_pct
+
+```{r echo=FALSE, message=FALSE}
+#principal components analysis on the continuous variables
+
+pZ <- prcomp(Customer_data_cont2, tol = 0.1)
+summary(pZ)
+PC_data_frame <- (cbind(pZ$x[,1], pZ$x[,2]))
+
+colnames(PC_data_frame) <- c("PC1","PC2")
+#Combining the categorical data frome and the PC data frame
+
+Customer_data_corrected <- cbind(Customer_data_categorical,PC_data_frame)
+
+```
+
+
+## Exploratory Data Analysis
+
+```{r, message=FALSE}
+
+
+
+```
+
+## Over-Sampling
+
+The dataframe is imbalanced. the number of 1's and 0's in the target variable is
+skewed. To Overcome this problem, 'Over Sampling' is done on the data set. In the 
+Over-Sampling algorithm the data is separated on the basis of the target variable
+into two data sets. The data set containing the target variable in minority (i.e.
+in this case the data set containing the rows where target variable is 1) is added
+multiple times to the other data set. Multiple copies on the smaller data set
+is added to the bigger data set. This results in a new data set where is a balance
+in the observations with target variable as '0' and '1'.
+```{r echo=FALSE, message=FALSE}
+#Oversampling the data
+
+campaign_failure = Customer_data_corrected[Customer_data_corrected$target==0,]
+campaign_sucess = Customer_data_corrected[Customer_data_corrected$target==1,]
+
+new_data <- campaign_failure
+for (i in 1:80)
+{
+new_data <- rbind(new_data,campaign_sucess, deparse.level = 0, make.row.names = TRUE,
+      stringsAsFactors = default.stringsAsFactors())
+}
+
+```
+
+The original data set is then split into training and testing samples in the 
+ratio of 0.7:0.3. The oversampled data set is also split into training and 
+testing samples in the same ratio.
+
+```{r echo=FALSE, message=FALSE}
+# Partition the original_data into train/test sets
+set.seed(1535)
+index <- sample(nrow(Customer_data_corrected),nrow(Customer_data_corrected)*0.70)
+train = Customer_data_corrected[index,]
+test = Customer_data_corrected[-index,]
+
+# Partition the Oversampled data set into train/test sets
+set.seed(1535)
+index <- sample(nrow(new_data),nrow(new_data)*0.70)
+train_oversampled = new_data[index,]
+test_oversampled = new_data[-index,]
+
+```
+
+## Data Modelling
+The machine learning algorithms of decision trees, Randon-Forest and Gradient-Boosting
+machines are used for modelling the data. 
+
+###Decision Tree
+The rpart library is used for building the decision trees. The train_oversampled
+data is used for modelling the tree. The target is the response variable and all 
+the other variables are used as predictors. The cp value has been kept low for
+tuning purposes at 0.0001. A cp plot is carried out to find the optimal value.
+The optimal value is found to be 0.00012. This value is then used to build the 
+tree.
+```{r, message=FALSE}
+
+#Make the best tree model
+
+target_rpart <- rpart(
+  target ~ ., data = train_oversampled, 
+  control = list(cp = 0.00012), method = "class"
+)
+
+#Plotting the tree
+
+plotcp(target_rpart)
+prp(target_rpart, extra = 1)
+                                                                                                                                                                            m
+#Prediction on training data
+
+pred.tree1 <- predict(target_rpart, test_oversampled, type="class", na.action = na.omit)
+table(test_oversampled$target, pred.tree1, dnn=c("Truth","Predicted"))
+
+#Prediction on test data
+pred.test.tree <- predict(target_rpart, test, type="class")
+table(test$target, pred.test.tree, dnn=c("Truth","Predicted"))
+
+#Variable importance
+
+target_rpart$variable.importance
+
+#ROC Curve ,Gain Chart and K-S Chart for test data and AUC values 0.95
+
+target.test.random = predict(target_rpart,test, type="prob")
+pred = prediction(target.test.random[,2], test$target)
+perf = performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE)
+
+slot(performance(pred, "auc"), "y.values")[[1]]  #0.945
+
+gain <- performance(pred, "tpr", "rpp")
+plot(gain, main = "Gain Chart")
+
+ks=max(attr(perf,'y.values')[[1]]-attr(perf,'x.values')[[1]])
+plot(perf,main=paste0(' KS=',round(ks*100,1),'%'))
+lines(x = c(0,1),y=c(0,1))
+print(ks); #0.80
+
+
+```
+
+### Impact of Display Description
+
+Lets analyse how the in-store display of a product impacts its sales.
+The following table briefs the unique number of places where each commodity and
+brand has been placed in the stores over thet course of 2 years.
+
+```{r, message=FALSE}
+
+#Table showing number of display desc for each brand of a product
+cleaned_data %>% 
+  group_by(commodity, brand) %>% 
+  summarise(Number_of_Display_desc = length(unique(display_desc))) %>%
+  datatable(caption = "Number of display locations for each product")
+
+#Plot to show the average sales vs display description
+cleaned_data  %>%
+  group_by(display_desc) %>%
+  summarise( average_sales = mean(dollar_sales)) %>%
+  arrange(desc(average_sales)) %>% 
+  ggplot(aes(x = display_desc, y = average_sales, fill = display_desc)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  xlab("Display Description") +
+  ylab("Average Sales in Dollars") +
+  ggtitle("Average sales vs Disply description")
+```
+
+The plot shows the average sales with respect to display description for all the
+commodities. It is seen from the plot that Side-Aisle End Cap, Secondary 
+Location Display and In-Aisle Display tend to increase the sale of a product 
+compared to not display it. However, we would like to see if the same trend is
+followed for each commodity. Hence, we move forward to analyse the impact of 
+in-store display on the average sales of each commodity, as shown below:
+
+```{r echo=FALSE, message=FALSE}
+
+# Sales of each product at different Store Display Location
+commodity_name <- c("pasta sauce", "syrups", "pasta", "pancake mixes")
+Plots <- list()
+for (i in seq_along(commodity_name)) {
+  Plots[[i]] <- cleaned_data %>%
+    filter(commodity == commodity_name[i]) %>%
+    group_by(display_desc) %>%
+    summarise(average_sales = mean(dollar_sales)) %>%
+    arrange(desc(average_sales)) %>% 
+    ggplot(aes(x = display_desc, y = average_sales, fill = display_desc)) +
+    geom_bar(stat = "identity",position = "dodge", show.legend = FALSE) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("Display Description") +
+    ylab("Avg Sales($)") +
+    ggtitle(paste(commodity_name[i])) +
+    scale_x_discrete(labels = abbreviate)
+}
+p <- plot_grid(Plots[[1]], Plots[[2]], Plots[[3]], Plots[[4]])  
+title <- ggdraw() + draw_label("Average sales vs Store display location"
+                               , fontface = 'bold')
+plot_grid(title, p, ncol = 1, rel_heights = c(0.1, 1))
+```
+
+Pasta Sauce has seen highest average sales when placed on Secondary
+location display(ScLD), In-shelf and In-Aisle. On the other hand, Pasta has sold
+well while displayed in the Side-ailse end cap (S-EC), store front and In-Aisle 
+end cap. Also, pancake mixes have high sale when placed in the Mid-Aisle end cap
+(M-EC) and  In-Asile display. However,it can be observed that the location
+doesn't impact the sales of syrups since they surprisingly show high average
+sales when Not on display (NtoD). This leads us to understand that each commodity
+has different hot spots of display to boost sales.
+
+
+```{r, message=FALSE}
+
+#Sales of the brand Private Label in each store location for all products
+
+for (i in seq_along(commodity_name)) {
+  Plots[[i]] <- cleaned_data %>%
+    filter(commodity == commodity_name[i], brand == "Private Label") %>%
+    group_by(display_desc) %>%
+    summarise(average_sales = mean(dollar_sales)) %>%
+    arrange(desc(average_sales)) %>% 
+    ggplot(aes(x = display_desc, y = average_sales, fill = display_desc)) +
+    geom_bar(stat = "identity",position = "dodge", show.legend = FALSE) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("Display Description") +
+    ylab("Avg Sales($)") +
+    ggtitle(paste(commodity_name[i])) +
+    scale_x_discrete(labels = abbreviate)
+}
+p <- plot_grid(Plots[[1]], Plots[[2]], Plots[[3]], Plots[[4]])  
+title <- ggdraw() + draw_label(paste("Private label sales vs Display Desc")
+                               , fontface = 'bold')
+plot_grid(title, p, ncol = 1, rel_heights = c(0.1, 1))
+
+```
+
+
+The plot of average sales versus display description of brand 'Private Label' for
+syrup commodity shows that the rear end cap, secondary location display and side
+aisle end cap result in increase in sales of syrups for this brand than when
+there was no display. This is contradictory to what was seen in the commodity
+plot. We feel that the brand plot gives a more clearer picture than the 
+commodity plot due to the reasons given above. For pasta sause the Side-Aisle
+End Cap, Mid-Aisle End Cap and In-Aisle of product placements help in
+improvement of sales.Comparing with the commodity plot side-aisle end cap and 
+In-Aisle is seen as the choices. For Pancake mixes Mid-Aisle End Cap, Side-Aisle
+End Cap and Secondary Location Display improves the sales for the product.
+Comparing with the commodity plot Mid-Aisle End Cap is chosen as the location 
+of display. In case of Private label pasta brand the Store-Front, Side-Aisle End
+Cap helps in improvement of sales. Therefore, store front and side-aisle end
+cap are chosen as possible locations for pasta commodity.
+
+### Impact of Feature description
+
+In the next section we want to compare whether the location of the brand of a 
+commodity in the weekly mailer has an impact on the sale of the product. The 
+locations in the weekly mailer are divided as back page feature, front page
+feature, interior page feature, interior page line item, not on feature, wrap
+back feature, wrap front feature, wrap interior feature. A plot of average sales
+as a function of feature descrption is given below.
+
+```{r, message=FALSE}
+
+#Table showing number of feature desc for each brand of a product
+cleaned_data %>% 
+  group_by(commodity, brand) %>% 
+  summarise(Number_of_Feature_desc = length(unique(feature_desc))) %>%
+  datatable(caption = "Number of feature locations for each product")
+
+# Overall Sales as a function of feature description
+cleaned_data  %>%
+  group_by(feature_desc) %>%
+  summarise( average_sales = mean(dollar_sales)) %>%
+  arrange(desc(average_sales)) %>% 
+  ggplot(aes(x = feature_desc, y = average_sales, fill = feature_desc)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  xlab("Feature Description") +
+  ylab("Average Sales in Dollars") +
+  ggtitle("Average sales vs Feature description")
+```
+
+The interior page line item, wrap back feature and interior page feature results
+in an improvement of sales. We want to analyse the commodity wise pattern and 
+then a brand wise pattern of all the commodities.
+
+```{r, message=FALSE}
+
+# Sales of each product as a function of feature desc
+
+for (i in seq_along(commodity_name)) {
+  Plots[[i]] <- cleaned_data %>%
+    filter(commodity == commodity_name[i]) %>%
+    group_by(feature_desc) %>%
+    summarise(average_sales = mean(dollar_sales)) %>%
+    arrange(desc(average_sales)) %>% 
+    ggplot(aes(x = feature_desc, y = average_sales, fill = feature_desc)) +
+    geom_bar(stat = "identity",position = "dodge", show.legend = FALSE) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("Display Description") +
+    ylab("Avg Sales($)") +
+    ggtitle(paste(commodity_name[i])) +
+    scale_x_discrete(labels = abbreviate)
+}
+p <- plot_grid(Plots[[1]], Plots[[2]], Plots[[3]], Plots[[4]])  
+title <- ggdraw() + draw_label("Average sales vs Location of feature in Mailer"
+                               , fontface = 'bold')
+plot_grid(title, p, ncol = 1, rel_heights = c(0.1, 1))
+
+```
+
+ For pasta commodity wrap front feature, wrap back feature and back page feature 
+helps improve sales. For pancake mixes we have only four feature descriptions.
+Wrap front feature helps in marginal improvement of sales. Pasta sause has all
+the feature descriptions. Interior page feature has an improvement on the sales 
+for this commodity. For the syrup commodity, a wrap back feature, interior page
+line item and front page feature improves sales. However, as discussed for the
+display description many brands in the commodity will not have a feature and the
+sales plot may be affected or skewed by this. Thereofore, we are choosing a brand
+(Private Label) which has  a good spread of all the feature descriptions for all
+the commodities.
+
+```{r, message=FALSE}
+
+#Sales of the brand Private Label as a function of feature desc
+
+for (i in seq_along(commodity_name)) {
+  Plots[[i]] <- cleaned_data %>%
+    filter(commodity == commodity_name[i],brand == "Private Label") %>%
+    group_by(feature_desc) %>%
+    summarise(average_sales = mean(dollar_sales)) %>%
+    arrange(desc(average_sales)) %>% 
+    ggplot(aes(x = feature_desc, y = average_sales, fill = feature_desc)) +
+    geom_bar(stat = "identity",position = "dodge", show.legend = FALSE) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("Display Description") +
+    ylab("Avg Sales($)") +
+    ggtitle(paste(commodity_name[i])) +
+    scale_x_discrete(labels = abbreviate)
+}
+p <- plot_grid(Plots[[1]], Plots[[2]], Plots[[3]], Plots[[4]])  
+title <- ggdraw() + draw_label("Private label sales vs Weekly mailer feature"
+                               , fontface = 'bold')
+plot_grid(title, p, ncol = 1, rel_heights = c(0.1, 1))
+```
+
+The sales of Private Label Pasta has improved most due to the wrap front feature
+,wrap back and wrap interior feature in the weekly mailer. Hence, wrap front 
+feature is good spot for this product. Wrap front feature is again helping
+improve sales for  Private Label pancake mixes, followed by back page feature.
+The back page feature is seen improving sales of pasta sause. None of the
+feature descriptions is improving the sale for syrup. Might be the syrup users 
+dont read the weekly mailer. One important observation is the interior page
+feature is not helping improve sales for any of the commodities and can be
+avoided.
+
+## Summary
+
+The average sales of a commodity as a function of display and feature
+description was analysed. The display description is the location of display of 
+the product in the store.The feature description is the location of featuring of 
+the product in the weekly mailer. The steps carried out and 
+insights obtained are summarized below:
+
+*  An initial plot of average sales as a function of display locations and 
+feature description is made. 
+
+*  A plot of average sales of the four commodities pasta, pasta sauce, 
+pancake mixes and syrup versus display locations is made. An intial prediction
+is made from these plots.
+
+*  A more general conclusion is made by taking a brand 'Private Label' which 
+manufactures all four commodities and is a common brand in all products, and 
+also featuring in many in-store locations and magazine feature.
+
+*  It is found that the rear end cap is the best location to display syrup. 
+Side-aisle End Cap and In-Aisle are good locations to display pasta sause.
+Mid-Aisle End Cap is a good location to display pancakes. Store front and 
+side-aisle are chosen for pasta.
+
+*  Wrap front feature is helping improve sales of pancake mixes and pasta.The 
+back page feature is improving sales of pasta sause. The interior feature 
+description is not helping improve sales. 
+
+The customer should place the product in the store location mentioned above and 
+use the weekly mailer wisely by using the above mentioned feature locations for
+different commodities to improve sales. 
+
+The limitations are many. The analysis is not exhaustive as only one brand from 
+each commodity was used for the analysis. More brands for each commodity can be 
+analysed and averaged to get a better picture. Effects of days of a week on 
+sales can also be analysed.---
+title: "Comcast_DataChallenge"
+author: "Gopalakrishnan"
+date: "7/10/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
